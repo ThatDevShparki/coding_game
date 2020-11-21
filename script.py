@@ -10,7 +10,7 @@ from itertools import product, chain
 
 """ Global Variables """
 LOCAL = True
-DEBUG = True
+DEBUG = False
 LOCAL_COUNTER = 0
 
 logger = None
@@ -54,7 +54,8 @@ def input_():
         return _input
 
 def debug(data):
-    print(str(data), file=sys.stderr, flush=True)
+    if DEBUG:
+        print(str(data), file=sys.stderr, flush=True)
 
 def transpose(data):
     t_data = {}
@@ -94,14 +95,13 @@ class Timer:
         if last_percent >= 100:
             priority += '!!'
 
-        if LOCAL:
-            print(
-                '[{}] {} {}: {:=0.2f}s {:=0.2f}% ({:=0.2f}s {:=0.2f}%)'.format(
-                    self.name, priority, msg or "Elapsed Time", 
-                    elapsed_time, elapsed_percent,
-                    elapsed_last, last_percent
-                )
+        debug(
+            '[{}] {} {}: {:=0.2f}s {:=0.2f}% ({:=0.2f}s {:=0.2f}%)'.format(
+                self.name, priority, msg or "Elapsed Time", 
+                elapsed_time, elapsed_percent,
+                elapsed_last, last_percent
             )
+        )
 
         self._last_report = now
 
@@ -199,6 +199,26 @@ class Delta:
             price=self.price - other.price
         )
 
+    def __truediv__(self, other):
+        return Delta(
+            data=[s/other for s in self.data],
+            price=self.price/other
+        )
+    
+    def __mul__(self, other):
+        return Delta(
+            data=[s*other for s in self.data],
+            price=self.price*other
+        )
+
+    def __matmul__(self, other):
+        return sum(s*o for s,o in zip(self.data, other.data))
+
+    def normalize(self):
+        if self.size == 0:
+            return Delta()
+        return self/self.size
+
 
 class Recipe(Delta):
     def __init__(self):
@@ -254,14 +274,15 @@ class Player(Delta):
 
 
 """ Compiled Features """
-TURN, BUFFER_SIZE, MOVE_BUFFER = 0, 3, []
+TURN, BUFFER_SIZE, MOVE_BUFFER = 0, 3, [80, 81, 'X']
 WEIGHTS = {}
 BREWS, BREWS_UPDATE = {}, False
-CHOSEN_TURNS = {
-    0: 'CAST 79',
-    1: 'CAST 80',
-    2: 'CAST 81'
-}
+# CHOSEN_TURNS = {
+#     0: 79,
+#     1: 80,
+#     2: 81
+# }
+CHOSEN_TURNS = {}
 
 # Global Features
 G_OPTIONS = {}
@@ -382,7 +403,7 @@ def initialize_options():
                 _option += (f'CAST {cast}',)
         return _option
 
-    # Get shortened list of paths to each delta
+    # Get shortened list of paths to each delta & transpose
     t_results, t_minlen = {}, {}
     for option, delta in iter_options(P_CASTS):
         if len(option) >= BUFFER_SIZE+1: # We are going to check our buffer against these for next move
@@ -395,10 +416,10 @@ def initialize_options():
             else:
                 t_results[delta] = [option]
                 t_minlen[delta] = len(option)
-    
+
     # Generate optimized results & cache by sub option
     buffer_cache = {}
-    for delta, options in t_results.items():
+    for options in t_results.values():
         opop = min(options, key=lambda o: calc_com(o))
         sub_options = (
             (opop[i:i+BUFFER_SIZE], opop[i+BUFFER_SIZE])
@@ -406,17 +427,18 @@ def initialize_options():
         )
         for option, next_option in sub_options:
             option_cache = buffer_cache.setdefault(option, {})
-            ops_cache = option_cache.setdefault((next_option,), [])
-            if not delta in ops_cache:
-                ops_cache.append(delta)
+            option_cache[(next_option,)] = (
+                Delta() if next_option == 'X' else P_CASTS[next_option]
+            )
 
     # Only add paths to the global options if there is a next path
+    # Add a weight that represents how dramatic of a change it was
     for option, data in buffer_cache.items():
         option_cache = G_OPTIONS.setdefault(option, {})
-        for next_option in data:
+        for next_option, delta in data.items():
             key = option[1:]+next_option
             if key in buffer_cache:
-                option_cache[next_option] = casts[next_option]
+                option_cache[next_option] = delta
 
     # G_OPTIONS = buffer_cache
 
@@ -441,31 +463,31 @@ def update_brews():
     """
     global P_OPTIONS
 
-    for option, data in G_OPTIONS.items():
-        for next_option, ops in data.items():
-            option_cache = P_OPTIONS.setdefault(option, {})
-            brews_cache = option_cache.setdefault(next_option, {})
-            for brew in BREWS.values():
-                if not brew in brews_cache:
-                    brews_cache[brew] = [brew**delta]
+    # for option, data in G_OPTIONS.items():
+    #     for next_option, ops in data.items():
+    #         option_cache = P_OPTIONS.setdefault(option, {})
+    #         brews_cache = option_cache.setdefault(next_option, {})
+    #         for brew in BREWS.values():
+    #             if not brew in brews_cache:
+    #                 brews_cache[brew] = [brew**delta]
 
-            print('>>', next_option, len(ops))
-            print(ops)
-            print(len(ops))
+    #         print('>>', next_option, len(ops))
+    #         print(ops)
+    #         print(len(ops))
 
 
-    for delta, options in t_results.items():
-        opop = min(options, key=lambda o: calc_com(o))
-        sub_options = (
-            (opop[i:i+BUFFER_SIZE], opop[i+BUFFER_SIZE])
-            for i in range(len(opop)-BUFFER_SIZE)
-        )
-        for option, next_option in sub_options:
-            option_cache = P_OPTIONS.setdefault(option, {})
-            brews_cache = option_cache.setdefault(next_option, {})
-            for brew in BREWS.values():
-                if not brew in brews_cache:
-                    brews_cache[brew] = brew**delta
+    # for delta, options in t_results.items():
+    #     opop = min(options, key=lambda o: calc_com(o))
+    #     sub_options = (
+    #         (opop[i:i+BUFFER_SIZE], opop[i+BUFFER_SIZE])
+    #         for i in range(len(opop)-BUFFER_SIZE)
+    #     )
+    #     for option, next_option in sub_options:
+    #         option_cache = P_OPTIONS.setdefault(option, {})
+    #         brews_cache = option_cache.setdefault(next_option, {})
+    #         for brew in BREWS.values():
+    #             if not brew in brews_cache:
+    #                 brews_cache[brew] = brew**delta
     
     # for option, data in P_OPTIONS.items():
     #     for next_option, brews in data.items():
@@ -473,6 +495,61 @@ def update_brews():
 
     # print(json.dumps(P_OPTIONS, indent=2, default=str))
     pass
+
+def encode_turn(token):
+    if token in P_CASTS:
+        return f'CAST {token}'
+    elif token in BREWS:
+        return f'BREW {token}'
+    elif token == 'X':
+        return 'REST'
+    return 'WAIT'
+
+def decode_turn(token):
+    if isinstance(token, (tuple, list)):
+        token = token[0]
+
+    if 'CAST' in token or 'BREW' in token:
+        return int(token.replace('CAST','').strip())
+    elif token == 'REST':
+        return 'X'
+    return 'W'
+
+def next_turn(player):
+    global MOVE_BUFFER
+
+    # If turn is chosen, use it
+    if TURN in CHOSEN_TURNS:
+        return encode_turn(CHOSEN_TURNS[TURN])
+
+    move = None
+    options = G_OPTIONS.get(tuple(MOVE_BUFFER))
+    
+    # If only one possible turn, use it
+    if len(list(options.keys())) == 1:
+        return list(options.keys())[0]
+
+    # Check the next 2 rounds and see where you end up
+    for move in options.values():
+        options_2 = [MOVE_BUFFER]
+        
+    
+
+
+
+
+    
+    
+    # if not options:
+    #     MOVE_BUFFER = [79, 80, 81]
+    #     return 'X'
+
+
+
+
+    # move = 'WAIT'
+    
+    return move
 
 
 """ Game Loop """
@@ -512,12 +589,12 @@ while True:
     # Initialize options
     if TURN == 0:
         initialize_options()
+        timer.report('Initialized Options')
 
     # Update brews
     if BREWS_UPDATE:
         update_brews()
-
-
+        timer.report('Initialized Brews')
 
 
 
@@ -578,20 +655,18 @@ while True:
     #     optimal_action = list(sorted_options.keys())[0][0]
     #     print(optimal_action) 
 
+    move = next_turn(player)
+    if not move:
+        debug('No turn provided')
+        move = 'W'
 
-
-
-
-    move = 'WAIT'
-    print(move)
-
-
-
+    print(encode_turn(move))
+    debug(MOVE_BUFFER)
 
     # Turn cleanup
     TURN += 1
     BREWS_UPDATE, P_CASTS_UPDATE, O_CASTS_UPDATE = False, False, False
-    MOVE_BUFFER.append(move)
+    MOVE_BUFFER.append(decode_turn(move))
     if len(MOVE_BUFFER) > 3:
         MOVE_BUFFER.pop(0)
     if LOCAL:
